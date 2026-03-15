@@ -176,20 +176,48 @@ const App: React.FC = () => {
   };
 
   const updateEmpDiscount = (deviceId: string, planKey: 'primePlus' | 'premium', field: string, value: number) => {
-    setEmpDiscountData(prev => ({
-      ...prev,
-      [deviceId]: {
-        ...prev[deviceId],
-        [planKey]: {
-          ...(prev[deviceId]?.[planKey] || {
-            newSubsidy: 0, newContract: 0,
-            mnpSubsidy: 0, mnpContract: 0,
-            changeSubsidy: 0, changeContract: 0
-          }),
-          [field]: value
-        }
+    const device = devices.find(d => d.id === deviceId);
+    if (!device) return;
+
+    const getBaseName = (name: string) => name.split('(')[0].trim();
+    const baseName = getBaseName(device.name);
+
+    // 동일 기종(용량 제외 이름이 같은) 단말기 리스트 추출
+    const relatedDeviceIds = empDiscountDeviceIds.filter(id => {
+      const d = devices.find(x => x.id === id);
+      return d && getBaseName(d.name) === baseName;
+    });
+
+    // 현재 수정 중인 단말기가 해당 기종 그룹의 첫 번째인지 확인
+    const isFirstInGroup = relatedDeviceIds[0] === deviceId;
+
+    setEmpDiscountData(prev => {
+      const nextData = { ...prev };
+      
+      const applyUpdate = (id: string, val: number) => {
+        nextData[id] = {
+          ...nextData[id],
+          [planKey]: {
+            ...(nextData[id]?.[planKey] || {
+              newSubsidy: 0, newContract: 0,
+              mnpSubsidy: 0, mnpContract: 0,
+              changeSubsidy: 0, changeContract: 0
+            }),
+            [field]: val
+          }
+        };
+      };
+
+      if (isFirstInGroup) {
+        // 첫 번째 단말기 수정 시 동일 기종 전체에 자동 적용
+        relatedDeviceIds.forEach(id => applyUpdate(id, value));
+      } else {
+        // 그 외 단말기 수정 시 해당 단말기만 개별 적용
+        applyUpdate(deviceId, value);
       }
-    }));
+
+      return nextData;
+    });
   };
 
   const sortedDevices = useMemo(() => {
