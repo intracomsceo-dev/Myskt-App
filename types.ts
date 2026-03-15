@@ -9,6 +9,12 @@ export enum PaymentMethod {
   LUMP_SUM = 'LUMP_SUM'
 }
 
+export enum JoinType {
+  NEW = 'NEW',
+  MNP = 'MNP',
+  CHANGE = 'CHANGE'
+}
+
 export interface SktPlan {
   id: string;
   name: string;
@@ -32,6 +38,7 @@ export interface CalculatorState {
   afterPlanId: string;
   discountType: DiscountType;
   paymentMethod: PaymentMethod;
+  joinType: JoinType;
   employeeDiscount: number;
   useFamilyDiscount: boolean;
   internetDiscount: number;

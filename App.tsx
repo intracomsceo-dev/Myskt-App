@@ -1,9 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { DiscountType, PaymentMethod, SktPlan, SktDevice, CalculatorState, DeviceCategory } from './types';
+import { DiscountType, PaymentMethod, SktPlan, SktDevice, CalculatorState, DeviceCategory, JoinType } from './types';
 
 // [시스템 안내] 아래 DEFAULT 데이터는 관리자 모드에서 추출한 최신 데이터를 기반으로 동기화되었습니다.
 const STORAGE_KEY_DEVICES = 'skt_opt_devices_v4';
 const STORAGE_KEY_PLANS = 'skt_opt_plans_v4';
+const STORAGE_KEY_EMP_IDS = 'skt_emp_discount_ids_v1';
+const STORAGE_KEY_EMP_DATA = 'skt_emp_discount_data_v1';
 
 // [시스템 수정] 관리자 비밀번호
 const SECRET_PASSWORD = '6091'; 
@@ -119,6 +121,49 @@ const App: React.FC = () => {
   const [newPlanPrice, setNewPlanPrice] = useState<number | ''>('');
   const [showExportModal, setShowExportModal] = useState(false);
 
+  // [임시] 임직원 할인 관리용 단말기 리스트
+  const [empDiscountDeviceIds, setEmpDiscountDeviceIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_EMP_IDS);
+    return saved ? JSON.parse(saved) : ['dev-1767915504591', 'dev-1767915493279'];
+  });
+  
+  // [임시] 임직원 할인 관리용 데이터
+  const [empDiscountData, setEmpDiscountData] = useState<Record<string, any>>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_EMP_DATA);
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  const saveEmpDiscountSettings = () => {
+    localStorage.setItem(STORAGE_KEY_EMP_IDS, JSON.stringify(empDiscountDeviceIds));
+    localStorage.setItem(STORAGE_KEY_EMP_DATA, JSON.stringify(empDiscountData));
+    alert('✅ 임직원 할인 설정이 브라우저에 저장되었습니다.');
+  };
+
+  const moveEmpDiscountDevice = (index: number, direction: 'up' | 'down') => {
+    const newIds = [...empDiscountDeviceIds];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= newIds.length) return;
+    [newIds[index], newIds[targetIndex]] = [newIds[targetIndex], newIds[index]];
+    setEmpDiscountDeviceIds(newIds);
+  };
+
+  const updateEmpDiscount = (deviceId: string, planKey: 'primePlus' | 'premium', field: string, value: number) => {
+    setEmpDiscountData(prev => ({
+      ...prev,
+      [deviceId]: {
+        ...prev[deviceId],
+        [planKey]: {
+          ...(prev[deviceId]?.[planKey] || {
+            newSubsidy: 0, newContract: 0,
+            mnpSubsidy: 0, mnpContract: 0,
+            changeSubsidy: 0, changeContract: 0
+          }),
+          [field]: value
+        }
+      }
+    }));
+  };
+
   const sortedDevices = useMemo(() => {
     return [...devices].sort((a, b) => (a.order || 999) - (b.order || 999));
   }, [devices]);
@@ -137,6 +182,7 @@ const App: React.FC = () => {
     afterPlanId: sortedPlans[sortedPlans.length - 1]?.id || '',
     discountType: DiscountType.CONTRACT,
     paymentMethod: PaymentMethod.INSTALLMENT,
+    joinType: JoinType.CHANGE,
     employeeDiscount: 0,
     useFamilyDiscount: false,
     internetDiscount: 0,
@@ -155,6 +201,45 @@ const App: React.FC = () => {
     const months = state.discountType === DiscountType.SUBSIDY ? 6 : 4;
     setState(prev => ({ ...prev, maintenanceMonths: months }));
   }, [state.discountType]);
+
+  // [시스템 추가] 임직원 할인 자동 계산 로직
+  useEffect(() => {
+    const plan = plans.find(p => p.id === state.initialPlanId);
+    if (!plan) return;
+
+    let planKey: 'primePlus' | 'premium' | null = null;
+    if (plan.name.includes('프라임플러스')) planKey = 'primePlus';
+    else if (plan.name.includes('프리미엄')) planKey = 'premium';
+
+    // [특정 기종 예외] 갤럭시 와이드8, 갤럭시 A17 LTE는 모든 요금제에 할인 적용
+    const isAllPlanDevice = ['dev-1767916206734', 'dev-1767916247917'].includes(state.deviceId);
+    
+    // 해당 기종이 아니면서 프라임플러스/프리미엄도 아니면 할인 0
+    if (!planKey && !isAllPlanDevice) {
+      setState(prev => ({ ...prev, employeeDiscount: 0 }));
+      return;
+    }
+
+    // 모든 요금제 적용 기종인데 프라임플러스/프리미엄이 아닌 경우 '프라임플러스' 기준 데이터 사용
+    const effectivePlanKey = planKey || 'primePlus';
+
+    const deviceData = empDiscountData[state.deviceId];
+    if (!deviceData || !deviceData[effectivePlanKey]) {
+      setState(prev => ({ ...prev, employeeDiscount: 0 }));
+      return;
+    }
+
+    const planData = deviceData[effectivePlanKey];
+    let field = '';
+    
+    // 가입유형 + 할인구분 조합으로 필드명 결정
+    const typePrefix = state.joinType === JoinType.NEW ? 'new' : state.joinType === JoinType.MNP ? 'mnp' : 'change';
+    const discSuffix = state.discountType === DiscountType.SUBSIDY ? 'Subsidy' : 'Contract';
+    field = `${typePrefix}${discSuffix}`;
+
+    const discountAmount = (planData[field] || 0) * 10000; // 단위: 만원 -> 원
+    setState(prev => ({ ...prev, employeeDiscount: discountAmount }));
+  }, [state.deviceId, state.initialPlanId, state.joinType, state.discountType, empDiscountData, plans]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_DEVICES, JSON.stringify(devices));
@@ -531,6 +616,147 @@ const App: React.FC = () => {
               </table>
             </div>
           </div>
+
+          <div className="bg-white rounded-3xl shadow-xl border-2 border-slate-200 overflow-hidden">
+            <div className="bg-slate-100 p-6 border-b-2 border-slate-200 flex justify-between items-center">
+              <div>
+                <h2 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                  <i className="fas fa-percent text-indigo-600"></i> 임직원 할인 관리 (UI 전용)
+                </h2>
+                <p className="text-xs text-slate-500 font-bold mt-1">※ 단위: 만원 (예: 5 입력 시 50,000원 할인)</p>
+              </div>
+              <div className="flex gap-2">
+                <select 
+                  className="px-4 py-2 rounded-xl border-2 border-slate-300 font-bold text-sm outline-none focus:border-indigo-500"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setEmpDiscountDeviceIds([...empDiscountDeviceIds, e.target.value]);
+                      e.target.value = '';
+                    }
+                  }}
+                  value=""
+                >
+                  <option value="">단말기 추가...</option>
+                  {devices.filter(d => !empDiscountDeviceIds.includes(d.id)).map(d => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            
+            <div className="p-0 overflow-x-auto">
+              <table className="w-full border-collapse text-center">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th rowSpan={2} className="px-4 py-3 font-black text-slate-700 border-r border-slate-200 min-w-[150px]">기종</th>
+                    <th rowSpan={2} className="px-4 py-3 font-black text-slate-700 border-r border-slate-200 min-w-[120px]">요금제</th>
+                    <th colSpan={2} className="px-4 py-2 font-black text-orange-600 border-r border-slate-200 bg-orange-50/30">신규</th>
+                    <th colSpan={2} className="px-4 py-2 font-black text-blue-600 border-r border-slate-200 bg-blue-50/30">번호이동(MNP)</th>
+                    <th colSpan={2} className="px-4 py-2 font-black text-red-600 bg-red-50/30">기기변경</th>
+                  </tr>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px]">
+                    <th className="px-2 py-2 font-bold text-orange-500 border-r border-slate-200 bg-orange-50/50">공시지원금</th>
+                    <th className="px-2 py-2 font-bold text-orange-500 border-r border-slate-200 bg-orange-50/50">선택약정</th>
+                    <th className="px-2 py-2 font-bold text-blue-500 border-r border-slate-200 bg-blue-50/50">공시지원금</th>
+                    <th className="px-2 py-2 font-bold text-blue-500 border-r border-slate-200 bg-blue-50/50">선택약정</th>
+                    <th className="px-2 py-2 font-bold text-red-500 border-r border-slate-200 bg-red-50/50">공시지원금</th>
+                    <th className="px-2 py-2 font-bold text-red-500 bg-red-50/50">선택약정</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {empDiscountDeviceIds.map((devId, index) => {
+                    const device = devices.find(d => d.id === devId);
+                    if (!device) return null;
+                    
+                    const data = {
+                      primePlus: empDiscountData[devId]?.primePlus || { newSubsidy: 0, newContract: 0, mnpSubsidy: 0, mnpContract: 0, changeSubsidy: 0, changeContract: 0 },
+                      premium: empDiscountData[devId]?.premium || { newSubsidy: 0, newContract: 0, mnpSubsidy: 0, mnpContract: 0, changeSubsidy: 0, changeContract: 0 }
+                    };
+
+                    const renderInput = (planKey: 'primePlus' | 'premium', field: string) => (
+                      <input 
+                        type="number" 
+                        className="w-full bg-transparent text-center font-black outline-none placeholder:text-slate-300"
+                        style={{ color: field.includes('new') ? '#ea580c' : field.includes('mnp') ? '#2563eb' : '#dc2626' }}
+                        placeholder="0"
+                        value={data[planKey][field] || ''}
+                        onChange={(e) => updateEmpDiscount(devId, planKey, field, Number(e.target.value))}
+                      />
+                    );
+
+                    return (
+                      <React.Fragment key={devId}>
+                        {/* 프라임플러스 행 */}
+                        <tr className="border-b border-slate-100 group">
+                          <td rowSpan={2} className="px-4 py-4 font-black text-white bg-[#B20000] border-r border-white/20 relative">
+                            <div className="text-sm leading-tight pr-8">{device.name}</div>
+                            {['dev-1767916206734', 'dev-1767916247917'].includes(devId) && (
+                              <div className="mt-1 text-[10px] bg-white/20 rounded px-1 inline-block">모든 요금제 적용</div>
+                            )}
+                            <div className="absolute top-1 right-1 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button 
+                                onClick={() => moveEmpDiscountDevice(index, 'up')}
+                                disabled={index === 0}
+                                className="w-5 h-5 rounded bg-white/20 hover:bg-white/40 flex items-center justify-center text-[10px] disabled:opacity-10"
+                              >
+                                <i className="fas fa-chevron-up"></i>
+                              </button>
+                              <button 
+                                onClick={() => moveEmpDiscountDevice(index, 'down')}
+                                disabled={index === empDiscountDeviceIds.length - 1}
+                                className="w-5 h-5 rounded bg-white/20 hover:bg-white/40 flex items-center justify-center text-[10px] disabled:opacity-10"
+                              >
+                                <i className="fas fa-chevron-down"></i>
+                              </button>
+                              <button 
+                                onClick={() => setEmpDiscountDeviceIds(empDiscountDeviceIds.filter(id => id !== devId))}
+                                className="w-5 h-5 rounded bg-white/20 hover:bg-red-500 flex items-center justify-center text-[10px]"
+                              >
+                                <i className="fas fa-times"></i>
+                              </button>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 font-bold text-slate-700 border-r border-slate-200 bg-white">프라임플러스</td>
+                          <td className="p-1 border-r border-slate-100 bg-orange-50/20">{renderInput('primePlus', 'newSubsidy')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-orange-50/20">{renderInput('primePlus', 'newContract')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-blue-50/20">{renderInput('primePlus', 'mnpSubsidy')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-blue-50/20">{renderInput('primePlus', 'mnpContract')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-red-50/20">{renderInput('primePlus', 'changeSubsidy')}</td>
+                          <td className="p-1 bg-red-50/20">{renderInput('primePlus', 'changeContract')}</td>
+                        </tr>
+                        {/* 프리미엄 행 */}
+                        <tr className="border-b border-slate-200">
+                          <td className="px-4 py-3 font-bold text-slate-700 border-r border-slate-200 bg-white">프리미엄</td>
+                          <td className="p-1 border-r border-slate-100 bg-orange-50/20">{renderInput('premium', 'newSubsidy')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-orange-50/20">{renderInput('premium', 'newContract')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-blue-50/20">{renderInput('premium', 'mnpSubsidy')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-blue-50/20">{renderInput('premium', 'mnpContract')}</td>
+                          <td className="p-1 border-r border-slate-100 bg-red-50/20">{renderInput('premium', 'changeSubsidy')}</td>
+                          <td className="p-1 bg-red-50/20">{renderInput('premium', 'changeContract')}</td>
+                        </tr>
+                      </React.Fragment>
+                    );
+                  })}
+                  {empDiscountDeviceIds.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="py-20 text-slate-400 font-bold">
+                        <i className="fas fa-mobile-alt text-4xl mb-4 block"></i>
+                        상단에서 단말기를 추가하여 할인표를 구성하세요.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="p-6 bg-slate-50 border-t-2 border-slate-200 flex justify-end">
+              <button 
+                onClick={saveEmpDiscountSettings}
+                className="px-10 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black shadow-lg transition-all flex items-center gap-2"
+              >
+                <i className="fas fa-save"></i> 임직원 할인 설정 저장
+              </button>
+            </div>
+          </div>
               <div className="text-center pt-4 flex justify-center gap-4">
                   <button 
                     onClick={handleManualSave} 
@@ -604,19 +830,27 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="space-y-4">
+                  <label className="block text-xs font-black text-slate-400 mb-2 uppercase tracking-tighter">가입 유형</label>
+                  <div className="flex bg-slate-100 p-2 rounded-2xl">
+                    <button onClick={() => setState({...state, joinType: JoinType.NEW})} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${state.joinType === JoinType.NEW ? 'bg-white shadow-md text-[#E2000F]' : 'text-slate-500'}`}>신규</button>
+                    <button onClick={() => setState({...state, joinType: JoinType.MNP})} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${state.joinType === JoinType.MNP ? 'bg-white shadow-md text-[#E2000F]' : 'text-slate-500'}`}>번호이동</button>
+                    <button onClick={() => setState({...state, joinType: JoinType.CHANGE})} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${state.joinType === JoinType.CHANGE ? 'bg-white shadow-md text-[#E2000F]' : 'text-slate-500'}`}>기기변경</button>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div><label className="block text-xs font-black text-slate-400 mb-2 uppercase tracking-tighter">납부 방식</label><div className="flex bg-slate-100 p-2 rounded-2xl"><button onClick={() => setState({...state, paymentMethod: PaymentMethod.INSTALLMENT})} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${state.paymentMethod === PaymentMethod.INSTALLMENT ? 'bg-white shadow-md text-[#E2000F]' : 'text-slate-500'}`}>할부</button><button onClick={() => setState({...state, paymentMethod: PaymentMethod.LUMP_SUM})} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${state.paymentMethod === PaymentMethod.LUMP_SUM ? 'bg-white shadow-md text-[#E2000F]' : 'text-slate-500'}`}>일시불</button></div></div>
                   <div><label className="block text-xs font-black text-slate-400 mb-2 uppercase tracking-tighter">할인 구분</label><div className="flex bg-slate-100 p-2 rounded-2xl"><button onClick={() => setState({...state, discountType: DiscountType.SUBSIDY})} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${state.discountType === DiscountType.SUBSIDY ? 'bg-white shadow-md text-[#F37321]' : 'text-slate-500'}`}>공시</button><button onClick={() => setState({...state, discountType: DiscountType.CONTRACT})} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${state.discountType === DiscountType.CONTRACT ? 'bg-white shadow-md text-[#F37321]' : 'text-slate-500'}`}>선약</button></div></div>
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-black text-slate-500 mb-2 tracking-tighter">임직원 할인금액을 (원)단위로 입력하세요</label>
+                  <label className="block text-sm font-black text-slate-500 mb-2 tracking-tighter">임직원 할인금액 (자동 반영)</label>
                   <input 
-                    type="number" 
-                    className="w-full px-6 py-4 rounded-2xl border-4 border-slate-100 bg-slate-50 font-black text-xl text-slate-900 outline-none focus:border-[#E2000F] transition-all" 
-                    value={state.employeeDiscount === 0 ? '' : state.employeeDiscount} 
-                    onChange={(e) => setState({...state, employeeDiscount: e.target.value === '' ? 0 : Number(e.target.value)})} 
-                    placeholder="0" 
+                    type="text" 
+                    readOnly
+                    className="w-full px-6 py-4 rounded-2xl border-4 border-slate-100 bg-slate-100 font-black text-xl text-slate-900 outline-none cursor-default" 
+                    value={formatKrw(state.employeeDiscount)} 
                   />
                   {/* 할인단가표 보기 버튼 */}
                   <div className="mt-2 text-right">
@@ -635,7 +869,7 @@ const App: React.FC = () => {
                 
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-xs font-black text-slate-400 mb-1 tracking-tighter">유지 요금제 (M+{state.maintenanceMonths})</label>
+                    <label className="block text-xs font-black text-slate-400 mb-1 tracking-tighter">개통 요금제/유지지간 (M+{state.maintenanceMonths})</label>
                     <select 
                       className="w-full px-5 py-4 rounded-2xl border-4 border-slate-100 bg-slate-50 font-black text-lg text-slate-900 outline-none" 
                       value={state.initialPlanId} 
@@ -645,7 +879,7 @@ const App: React.FC = () => {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-black text-slate-400 mb-1 tracking-tighter">변경 후 요금제</label>
+                    <label className="block text-xs font-black text-slate-400 mb-1 tracking-tighter">유지기간 이후 변경 요금제</label>
                     <select 
                       className="w-full px-5 py-4 rounded-2xl border-4 border-slate-100 bg-slate-50 font-black text-lg text-slate-900 outline-none" 
                       value={state.afterPlanId} 
@@ -714,7 +948,7 @@ const App: React.FC = () => {
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-2 border-slate-100 flex flex-col h-full relative">
-                  <div className="flex items-center gap-3 mb-8"><div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-500 text-xl shadow-inner"><i className="fas fa-hourglass-start"></i></div><div><h4 className="text-lg font-black text-slate-900">변경 전 {state.maintenanceMonths}개월</h4><p className="text-[11px] text-slate-400 font-black uppercase tracking-widest">Initial Fee</p></div></div>
+                  <div className="flex items-center gap-3 mb-8"><div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-500 text-xl shadow-inner"><i className="fas fa-hourglass-start"></i></div><div><h4 className="text-lg font-black text-slate-900">개통 후 {state.maintenanceMonths}개월</h4><p className="text-[11px] text-slate-400 font-black uppercase tracking-widest">Initial Fee</p></div></div>
                   <div className="space-y-4 flex-1">
                     <div className="flex justify-between text-sm font-black"><span className="text-slate-500 tracking-tighter">기본료 ({initialPlan.name})</span><span className="text-slate-900">{formatKrw(initialPlan.price)}</span></div>
                     {results.initial.contractDiscount > 0 && (<div className="flex justify-between text-sm font-black text-[#E2000F]"><span className="tracking-tighter">선택약정(25%)</span><span>-{formatKrw(results.initial.contractDiscount)}</span></div>)}

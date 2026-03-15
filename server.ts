@@ -21,7 +21,7 @@ async function startServer() {
       let content = fs.readFileSync(appPath, "utf-8");
 
       // Helper to format data as code string
-      const formatAsCode = (data: any[], type: 'SktDevice' | 'SktPlan') => {
+      const formatAsCode = (data: any[], type: 'SktDevice' | 'SktPlan' | 'EmployeeDiscount') => {
         const lines = data.map(item => {
           const entries = Object.entries(item).map(([key, value]) => {
             let formattedValue = value;
@@ -38,11 +38,13 @@ async function startServer() {
           });
           return `  { ${entries.join(', ')} },`;
         });
-        return `const DEFAULT_${type === 'SktDevice' ? 'DEVICES' : 'PLANS'}: ${type}[] = [\n${lines.join('\n')}\n];`;
+        return `const DEFAULT_${type === 'SktDevice' ? 'DEVICES' : type === 'SktPlan' ? 'PLANS' : 'EMPLOYEE_DISCOUNTS'}: ${type}[] = [\n${lines.join('\n')}\n];`;
       };
 
+      const { devices, plans, employeeDiscounts } = req.body;
       const devicesCode = formatAsCode(devices, 'SktDevice');
       const plansCode = formatAsCode(plans, 'SktPlan');
+      const empDiscountsCode = formatAsCode(employeeDiscounts, 'EmployeeDiscount');
 
       console.log(`[API] Saving config to ${appPath}`);
 
@@ -60,6 +62,14 @@ async function startServer() {
         content = content.replace(plansRegex, plansCode);
       } else {
         console.warn("[API] DEFAULT_PLANS regex match failed");
+      }
+
+      // Replace DEFAULT_EMPLOYEE_DISCOUNTS
+      const empRegex = /const DEFAULT_EMPLOYEE_DISCOUNTS: EmployeeDiscount\[\] = \[[\s\S]*?\];/;
+      if (empRegex.test(content)) {
+        content = content.replace(empRegex, empDiscountsCode);
+      } else {
+        console.warn("[API] DEFAULT_EMPLOYEE_DISCOUNTS regex match failed");
       }
 
       fs.writeFileSync(appPath, content, "utf-8");
