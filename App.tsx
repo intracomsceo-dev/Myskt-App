@@ -87,6 +87,14 @@ const CATEGORIES = [
 ];
 
 const App: React.FC = () => {
+  useEffect(() => {
+    const isRefreshed = sessionStorage.getItem('isRefreshed');
+    if (!isRefreshed) {
+      sessionStorage.setItem('isRefreshed', 'true');
+      window.location.reload();
+    }
+  }, []);
+
   const [devices, setDevices] = useState<SktDevice[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_DEVICES);
     return saved ? JSON.parse(saved) : DEFAULT_DEVICES;
