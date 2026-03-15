@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { DiscountType, PaymentMethod, SktPlan, SktDevice, CalculatorState, DeviceCategory, JoinType } from './types';
+import { db } from './firebase';
+import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 
 // [시스템 안내] 아래 DEFAULT 데이터는 관리자 모드에서 추출한 최신 데이터를 기반으로 동기화되었습니다.
 const STORAGE_KEY_DEVICES = 'skt_opt_devices_v4';
 const STORAGE_KEY_PLANS = 'skt_opt_plans_v4';
-const STORAGE_KEY_EMP_IDS = 'skt_emp_discount_ids_v1';
-const STORAGE_KEY_EMP_DATA = 'skt_emp_discount_data_v1';
 
 // [시스템 수정] 관리자 비밀번호
 const SECRET_PASSWORD = '6091'; 
@@ -95,14 +95,8 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const [devices, setDevices] = useState<SktDevice[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_DEVICES);
-    return saved ? JSON.parse(saved) : DEFAULT_DEVICES;
-  });
-  const [plans, setPlans] = useState<SktPlan[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_PLANS);
-    return saved ? JSON.parse(saved) : DEFAULT_PLANS;
-  });
+  const [devices, setDevices] = useState<SktDevice[]>(DEFAULT_DEVICES);
+  const [plans, setPlans] = useState<SktPlan[]>(DEFAULT_PLANS);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
@@ -129,22 +123,48 @@ const App: React.FC = () => {
   const [newPlanPrice, setNewPlanPrice] = useState<number | ''>('');
   const [showExportModal, setShowExportModal] = useState(false);
 
-  // [임시] 임직원 할인 관리용 단말기 리스트
-  const [empDiscountDeviceIds, setEmpDiscountDeviceIds] = useState<string[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_EMP_IDS);
-    return saved ? JSON.parse(saved) : ['dev-1767915504591', 'dev-1767915493279'];
-  });
-  
-  // [임시] 임직원 할인 관리용 데이터
-  const [empDiscountData, setEmpDiscountData] = useState<Record<string, any>>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_EMP_DATA);
-    return saved ? JSON.parse(saved) : {};
-  });
+  // [시스템 수정] 임직원 할인 관리용 데이터 (Firebase 연동)
+  const [empDiscountDeviceIds, setEmpDiscountDeviceIds] = useState<string[]>(['dev-1767915504591', 'dev-1767915493279']);
+  const [empDiscountData, setEmpDiscountData] = useState<Record<string, any>>({});
 
-  const saveEmpDiscountSettings = () => {
-    localStorage.setItem(STORAGE_KEY_EMP_IDS, JSON.stringify(empDiscountDeviceIds));
-    localStorage.setItem(STORAGE_KEY_EMP_DATA, JSON.stringify(empDiscountData));
-    alert('✅ 임직원 할인 설정이 브라우저에 저장되었습니다.');
+  // [시스템 수정] Firebase 실시간 데이터 동기화 (기기, 요금제, 할인율 통합)
+  useEffect(() => {
+    // 1. 할인율 및 임직원 할인 기기 리스트 동기화
+    const unsubDiscount = onSnapshot(doc(db, 'discountRates', 'settings'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.deviceIds) setEmpDiscountDeviceIds(data.deviceIds);
+        if (data.discountData) setEmpDiscountData(data.discountData);
+      }
+    });
+
+    // 2. 단말기 및 요금제 리스트 동기화
+    const unsubConfig = onSnapshot(doc(db, 'config', 'main'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.devices) setDevices(data.devices);
+        if (data.plans) setPlans(data.plans);
+      }
+    });
+
+    return () => {
+      unsubDiscount();
+      unsubConfig();
+    };
+  }, []);
+
+  const saveEmpDiscountSettings = async () => {
+    try {
+      await setDoc(doc(db, 'discountRates', 'settings'), {
+        deviceIds: empDiscountDeviceIds,
+        discountData: empDiscountData,
+        updatedAt: new Date().toISOString()
+      });
+      alert('✅ 임직원 할인 설정이 클라우드(Firebase)에 저장되었습니다.');
+    } catch (error) {
+      console.error('Error saving settings:', error);
+      alert('❌ 저장 중 오류가 발생했습니다.');
+    }
   };
 
   const moveEmpDiscountDevice = (index: number, direction: 'up' | 'down') => {
@@ -249,11 +269,6 @@ const App: React.FC = () => {
     setState(prev => ({ ...prev, employeeDiscount: discountAmount }));
   }, [state.deviceId, state.initialPlanId, state.joinType, state.discountType, empDiscountData, plans]);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_DEVICES, JSON.stringify(devices));
-    localStorage.setItem(STORAGE_KEY_PLANS, JSON.stringify(plans));
-  }, [devices, plans]);
-
   const formatKrw = (val: number) => new Intl.NumberFormat('ko-KR').format(val) + '원';
 
   const selectedDevice = useMemo(() => devices.find(d => d.id === state.deviceId) || sortedDevices[0], [devices, sortedDevices, state.deviceId]);
@@ -351,23 +366,24 @@ const App: React.FC = () => {
   const handleManualSave = async () => {
     setIsSaving(true);
     try {
-      // 1. Save to LocalStorage (for immediate preview persistence)
-      localStorage.setItem(STORAGE_KEY_DEVICES, JSON.stringify(devices));
-      localStorage.setItem(STORAGE_KEY_PLANS, JSON.stringify(plans));
+      // 1. Save to Firestore (Shared with all users)
+      await setDoc(doc(db, 'config', 'main'), {
+        devices,
+        plans,
+        updatedAt: new Date().toISOString()
+      });
 
-      // 2. Save to Source Code via Backend API
-      const response = await fetch('/api/save-config', {
+      // 2. Save to Source Code via Backend API (Optional backup)
+      await fetch('/api/save-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ devices, plans }),
       });
 
-      if (!response.ok) throw new Error('서버 저장 실패');
-      
-      alert('✅ 데이터가 브라우저 및 소스 코드에 영구적으로 저장되었습니다.\n\n[안림] 이제 새로고침해도 변경사항이 유지됩니다.');
+      alert('✅ 데이터가 클라우드(Firebase) 및 서버에 저장되었습니다.\n\n이제 모든 사용자가 동일한 데이터를 실시간으로 공유합니다.');
     } catch (error) {
       console.error('Save error:', error);
-      alert('❌ 저장 중 오류가 발생했습니다. (서버 연결 확인 필요)');
+      alert('❌ 저장 중 오류가 발생했습니다.');
     } finally {
       setIsSaving(false);
     }
@@ -400,8 +416,18 @@ const App: React.FC = () => {
     }
   };
 
-  const resetData = () => { if (confirm('⚠️ 모든 데이터를 초기 설정으로 되돌리시겠습니까?')) { localStorage.removeItem(STORAGE_KEY_DEVICES); localStorage.removeItem(STORAGE_KEY_PLANS); window.location.reload(); } };
-  const syncWithSource = () => { if (confirm('🔄 브라우저 저장소를 비우고 소스 코드의 기본 데이터로 동기화하시겠습니까?')) { localStorage.removeItem(STORAGE_KEY_DEVICES); localStorage.removeItem(STORAGE_KEY_PLANS); window.location.reload(); } };
+  const resetData = async () => { 
+    if (confirm('⚠️ 모든 데이터를 초기 설정으로 되돌리시겠습니까? (클라우드 데이터도 초기화됩니다)')) { 
+      try {
+        await setDoc(doc(db, 'config', 'main'), { devices: DEFAULT_DEVICES, plans: DEFAULT_PLANS });
+        await setDoc(doc(db, 'discountRates', 'settings'), { deviceIds: [], discountData: {} });
+        window.location.reload(); 
+      } catch (e) {
+        alert('초기화 중 오류 발생');
+      }
+    } 
+  };
+  const syncWithSource = () => { if (confirm('🔄 클라우드 데이터를 무시하고 소스 코드의 기본 데이터로 화면을 갱신하시겠습니까? (저장 버튼을 누르기 전까지는 클라우드에 반영되지 않습니다)')) { setDevices(DEFAULT_DEVICES); setPlans(DEFAULT_PLANS); } };
 
   // Common Modal Component for Forms (팝업 창 컴포넌트)
   const EmbedModal = ({ isOpen, onClose, title, url }: { isOpen: boolean; onClose: () => void; title: string; url: string }) => {
