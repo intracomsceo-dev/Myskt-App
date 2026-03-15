@@ -458,7 +458,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-4">
             <div className="w-14 h-14 bg-gradient-to-tr from-[#E2000F] to-[#F37321] rounded-2xl flex items-center justify-center text-white font-black text-3xl shadow-lg">T</div>
             <div>
-              <h1 className="text-2xl font-black text-slate-900 tracking-tight">SKT 최적 설계 계산기</h1>
+              <h1 className="text-2xl font-black text-slate-900 tracking-tight">SKT 특판 요금 설계 계산기</h1>
               <p className="text-xs text-[#E2000F] font-black uppercase tracking-widest">Professional AI Consulting</p>
             </div>
           </div>
