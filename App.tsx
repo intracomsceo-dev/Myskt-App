@@ -398,7 +398,7 @@ const App: React.FC = () => {
                                 </div>
                                 <div>
                                     <h4 className="text-xl font-black text-slate-900 mb-2">보안 접근 확인</h4>
-                                    <p className="text-slate-500 text-sm font-bold">권한이 있는 관리자만 접근할 수 있습니다.</p>
+                                    <p className="text-slate-500 text-sm font-bold">관리자 전화번호 뒤 4자리를 입력하세요.</p>
                                 </div>
                                 <form onSubmit={handleSecretLogin} className="space-y-4">
                                     <input 
